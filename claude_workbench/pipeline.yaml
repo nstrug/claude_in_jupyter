@@ -30,16 +30,41 @@ spec:
 
   tasks:
     - name: git-clone
-      taskRef:
-        name: git-clone
-        kind: ClusterTask
+      taskSpec:
+        params:
+          - name: url
+            description: Git repository URL
+          - name: revision
+            description: Git revision to clone
+        workspaces:
+          - name: output
+            description: The git repo will be cloned onto this workspace
+        steps:
+          - name: clone
+            image: registry.redhat.io/ubi9/ubi-minimal:latest
+            workingDir: /workspace
+            script: |
+              #!/bin/sh
+              set -e
+
+              # Install git
+              microdnf install -y git
+
+              # Clean workspace
+              rm -rf $(workspaces.output.path)/*
+              rm -rf $(workspaces.output.path)/.[!.]*
+
+              # Clone repository
+              git clone $(params.url) $(workspaces.output.path)
+              cd $(workspaces.output.path)
+              git checkout $(params.revision)
+
+              echo "Cloned $(params.url) at revision $(params.revision)"
       params:
         - name: url
           value: $(params.git-url)
         - name: revision
           value: $(params.git-revision)
-        - name: deleteExisting
-          value: "true"
       workspaces:
         - name: output
           workspace: source
@@ -101,11 +126,16 @@ spec:
               #!/bin/bash
               set -e
 
-              # Start the build
-              BUILD_NAME=$(oc start-build $(params.buildconfig-name) --follow --output=name | cut -d'/' -f2)
-
-              echo -n "$BUILD_NAME" > $(results.build-name.path)
+              # Start the build and get the name immediately
+              BUILD_NAME=$(oc start-build $(params.buildconfig-name) --output=name | cut -d'/' -f2)
               echo "Build started: $BUILD_NAME"
+              echo -n "$BUILD_NAME" > $(results.build-name.path)
+
+              # Wait for build to complete (but don't capture logs)
+              oc wait --for=condition=Complete build/$BUILD_NAME --timeout=15m || \
+                (echo "Build failed or timed out" && exit 1)
+
+              echo "Build completed successfully"
       params:
         - name: buildconfig-name
           value: $(params.image-name)
