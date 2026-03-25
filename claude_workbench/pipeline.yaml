@@ -1,0 +1,161 @@
+---
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: jupyter-datascience-claude-pipeline
+  labels:
+    app: jupyter-datascience-claude
+spec:
+  params:
+    - name: git-url
+      type: string
+      description: Git repository URL
+      default: https://github.com/nstrug/claude_in_jupyter.git
+    - name: git-revision
+      type: string
+      description: Git revision to build
+      default: main
+    - name: context-dir
+      type: string
+      description: Path to the directory containing the Containerfile
+      default: claude_workbench
+    - name: image-name
+      type: string
+      description: Name of the ImageStream
+      default: jupyter-datascience-claude
+
+  workspaces:
+    - name: source
+      description: Workspace for source code
+
+  tasks:
+    - name: git-clone
+      taskRef:
+        name: git-clone
+        kind: ClusterTask
+      params:
+        - name: url
+          value: $(params.git-url)
+        - name: revision
+          value: $(params.git-revision)
+        - name: deleteExisting
+          value: "true"
+      workspaces:
+        - name: output
+          workspace: source
+
+    - name: get-commit-sha
+      runAfter:
+        - git-clone
+      taskSpec:
+        workspaces:
+          - name: source
+        results:
+          - name: commit-sha
+            description: Short commit SHA (7 chars)
+          - name: commit-sha-full
+            description: Full commit SHA
+        steps:
+          - name: get-sha
+            image: registry.redhat.io/ubi9/ubi-minimal:latest
+            workingDir: $(workspaces.source.path)
+            script: |
+              #!/bin/bash
+              set -e
+
+              # Get full commit SHA
+              FULL_SHA=$(cat .git/HEAD)
+              if [[ $FULL_SHA == ref:* ]]; then
+                REF_FILE=$(echo $FULL_SHA | cut -d' ' -f2)
+                FULL_SHA=$(cat .git/$REF_FILE)
+              fi
+
+              # Get short SHA (7 chars)
+              SHORT_SHA=${FULL_SHA:0:7}
+
+              echo -n "$SHORT_SHA" > $(results.commit-sha.path)
+              echo -n "$FULL_SHA" > $(results.commit-sha-full.path)
+
+              echo "Short SHA: $SHORT_SHA"
+              echo "Full SHA: $FULL_SHA"
+      workspaces:
+        - name: source
+          workspace: source
+
+    - name: trigger-build
+      runAfter:
+        - get-commit-sha
+      taskSpec:
+        params:
+          - name: buildconfig-name
+            description: Name of the BuildConfig to trigger
+          - name: context-dir
+            description: Context directory
+        results:
+          - name: build-name
+            description: Name of the triggered build
+        steps:
+          - name: start-build
+            image: image-registry.openshift-image-registry.svc:5000/openshift/cli:latest
+            script: |
+              #!/bin/bash
+              set -e
+
+              # Start the build
+              BUILD_NAME=$(oc start-build $(params.buildconfig-name) --follow --output=name | cut -d'/' -f2)
+
+              echo -n "$BUILD_NAME" > $(results.build-name.path)
+              echo "Build started: $BUILD_NAME"
+      params:
+        - name: buildconfig-name
+          value: $(params.image-name)
+        - name: context-dir
+          value: $(params.context-dir)
+
+    - name: tag-image
+      runAfter:
+        - trigger-build
+      taskSpec:
+        params:
+          - name: image-name
+            description: Name of the ImageStream
+          - name: commit-sha
+            description: Git commit SHA for tagging
+        steps:
+          - name: tag
+            image: image-registry.openshift-image-registry.svc:5000/openshift/cli:latest
+            script: |
+              #!/bin/bash
+              set -e
+
+              IMAGE_NAME=$(params.image-name)
+              COMMIT_SHA=$(params.commit-sha)
+
+              # Tag with commit SHA
+              oc tag ${IMAGE_NAME}:latest ${IMAGE_NAME}:${COMMIT_SHA}
+
+              # Also tag with 'git-' prefix for clarity
+              oc tag ${IMAGE_NAME}:latest ${IMAGE_NAME}:git-${COMMIT_SHA}
+
+              echo "Tagged ${IMAGE_NAME}:latest as:"
+              echo "  - ${IMAGE_NAME}:${COMMIT_SHA}"
+              echo "  - ${IMAGE_NAME}:git-${COMMIT_SHA}"
+      params:
+        - name: image-name
+          value: $(params.image-name)
+        - name: commit-sha
+          value: $(tasks.get-commit-sha.results.commit-sha)
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: jupyter-pipeline-workspace
+  labels:
+    app: jupyter-datascience-claude
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
