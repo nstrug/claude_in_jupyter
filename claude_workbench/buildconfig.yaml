@@ -1,0 +1,36 @@
+---
+apiVersion: image.openshift.io/v1
+kind: ImageStream
+metadata:
+  name: jupyter-datascience-claude
+  labels:
+    app: jupyter-datascience-claude
+spec:
+  lookupPolicy:
+    local: true
+
+---
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: jupyter-datascience-claude
+  labels:
+    app: jupyter-datascience-claude
+spec:
+  output:
+    to:
+      kind: ImageStreamTag
+      name: jupyter-datascience-claude:latest
+  source:
+    type: Git
+    git:
+      uri: https://github.com/nstrug/claude_in_jupyter.git
+      ref: main
+    contextDir: claude_workbench
+  strategy:
+    type: Docker
+    dockerStrategy:
+      dockerfilePath: CONTAINERFILE
+  triggers:
+    - type: ConfigChange
+    - type: ImageChange

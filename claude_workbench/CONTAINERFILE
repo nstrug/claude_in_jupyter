@@ -1,0 +1,19 @@
+FROM registry.redhat.io/rhoai/odh-workbench-jupyter-datascience-cpu-py312-rhel9@sha256:37b1fc952452db8c41164aa51bb30680bb6d125fb5a5b412d806149729536933
+
+USER 0
+
+RUN tee -a /etc/yum.repos.d/google-cloud-sdk.repo << EOF
+[google-cloud-cli]
+name=Google Cloud CLI
+baseurl=https://packages.cloud.google.com/yum/repos/cloud-sdk-el9-x86_64
+enabled=1
+gpgcheck=1
+repo_gpgcheck=0
+gpgkey=https://packages.cloud.google.com/yum/doc/rpm-package-key.gpg
+EOF
+
+RUN dnf install -y libxcrypt-compat.x86_64 google-cloud-cli
+
+USER 1001
+
+
